@@ -25,7 +25,6 @@ Here's a quick access to each notebook implementations:
 |<a href="https://github.com/aryashah2k/GNN_GCN_GAT/blob/main/GNN/04B_Information_Diffusion_Graph_Classification.ipynb">[Application]04B_Information_Diffusion_Graph_Classification</a>|-|-|
 |<a href="https://github.com/aryashah2k/GNN_GCN_GAT/blob/main/GNN/05_Learning_Algorithm.ipynb">05_Learning_Algorithm.ipynb</a>|-|-|
 
-Link to the digital version of the handout distributed in class: <a href="">Click Here</a>
 
 ## References
 |GNNs in General|GCNs|GATs|
