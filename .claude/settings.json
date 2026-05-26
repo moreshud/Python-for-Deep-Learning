@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -sL \"https://lilianweng.github.io/posts/2017-12-31-object-recognition-part-3/faster-RCNN.png\" -o faster_rcnn.png)",
+      "Bash(curl -sL \"https://lilianweng.github.io/posts/2018-12-27-object-recognition-part-4/yolo-network-architecture.png\" -o yolo_v1_arch.png)",
+      "Bash(python3)",
+      "Bash(python3 -c ' *)",
+      "Bash(curl -sL \"https://i.imgur.com/2yMyVSM.png\" -o segmentation_types.png)",
+      "Bash(curl -sL \"https://production-media.paperswithcode.com/tasks/instance-segmentation_V8SFvoP.jpg\" -o segmentation_types.png)"
+    ]
+  }
+}
