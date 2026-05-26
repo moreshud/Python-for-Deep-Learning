@@ -2,7 +2,7 @@
 
 |Node-worthy Meme(Pun Intended)|
 |------------------------------|
-|![spoderman](https://github.com/aryashah2k/GNN_GCN_GAT/blob/main/assets/graphman.jpg)|
+|![spoderman](./assets/graphman.jpg)|
 
 This repository holds the code-from-scratch implementations for the following three papers under the the domain of Graph Machine Learning:
 
