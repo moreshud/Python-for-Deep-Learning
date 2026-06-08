@@ -91,29 +91,75 @@ This is important: we're testing whether SSL features are **linearly separable**
 
 ---
 
-## Bridge: From SimCLR to DINO
+## Bridge: SimCLR → MoCo → BYOL → DINO
 
-**The problem with SimCLR:**
+### SimCLR's Problem: Batch Size
 
-1. **Needs large batches** — memory intensive
-2. **Doesn't work well with ViT** — ViT with contrastive learning collapses without careful tricks
-3. **All negatives are treated equally** — a view of a dog is equally "pushed away" from a view of another dog as from a car
-
-**The evolution:**
-
-```
-SimCLR (2020)     Contrastive, needs big batches, ResNet-focused
-    ↓
-MoCo (2020)       Memory bank for negatives — smaller batches
-    ↓
-BYOL (2020)       No negatives at all — but needs asymmetric predictor to prevent collapse
-    ↓
-DINO (2021)       No negatives, no predictor, ViT-native — just a centering trick
-```
+SimCLR's contrastive signal comes entirely from the current batch. More negatives = stronger signal, so the original paper uses **batch size 4096** (32 TPUs). With batch 256 you get ~510 negatives — the task becomes too easy and the model stops learning meaningful structure.
 
 **What to say:**
 
-> "Each step removes a requirement. SimCLR needs negatives and big batches. BYOL removes negatives. DINO removes the need for architectural asymmetry. By DINO, the method is almost embarrassingly simple — and it produces the best features."
+> "If your batch size is 2 — one image, two views — how many negatives do you have? Zero. The loss is trivially zero. SimCLR needs a crowd of negatives to work."
+
+---
+
+### MoCo: Decouple Batch Size from Negatives
+
+MoCo (He et al., 2020) fixes the batch size problem with a **memory queue**:
+
+```
+Current batch (query) ──▶ Encoder q (backprop) ──▶ compare with ──▶ NT-Xent loss
+                                                          ↑
+                    Memory queue (65,536 keys) ◀── Momentum Encoder k (EMA, no backprop)
+```
+
+- **Memory queue**: stores encoded keys from *past* batches — 65k negatives regardless of current batch size
+- **Momentum encoder**: the key encoder must be consistent with old keys still in the queue. If it changes too fast, old keys become stale and mislead training. Solution: EMA update with momentum = 0.999
+
+$$\theta_k \leftarrow 0.999 \cdot \theta_k + 0.001 \cdot \theta_q$$
+
+**What to say:**
+
+> "MoCo separates 'how many negatives' from 'how big is my GPU batch.' The queue gives you 65,000 negatives. The momentum encoder keeps those keys fresh. This is the same EMA idea DINO will use later — but here it's for consistency of negatives, not for self-distillation."
+
+**MoCo still has negatives** — it treats every other image as "different", even two photos of the same dog. That's a noisy signal. The next step removes negatives entirely.
+
+---
+
+### BYOL: No Negatives — and the Collapse Problem
+
+BYOL (Grill et al., 2020) says: forget negatives. Just make two augmented views of the same image match each other.
+
+```
+View 1 ──▶ Online Encoder ──▶ Online Projector ──▶ Predictor ──▶ ─┐
+                                                                    ↓ MSE loss
+View 2 ──▶ Target Encoder ──▶ Target Projector ──────────────────▶ stop_grad
+           (EMA of online, no gradient)
+```
+
+**The asymmetry is critical:** only the online branch has a `Predictor` MLP. The target has no predictor, no gradient. Remove either and it collapses.
+
+#### Mode Collapse — The Core Problem of Non-Contrastive SSL
+
+Without negatives, the easiest solution is to output the same vector for every input:
+
+```
+f(dog) = f(cat) = f(car) = [0, 0, 1, 0, 0, ...]
+```
+
+Loss = 0 instantly. But the encoder learned nothing. This is **mode collapse**.
+
+**What collapse looks like in practice:**
+- Loss drops to near-zero in the first few steps (suspiciously fast)
+- Linear eval accuracy stays at ~10% (random for 10 classes)
+- t-SNE: one dense blob, no class separation
+- Embedding variance across the batch ≈ 0
+
+**Why doesn't BYOL collapse?** The EMA target + predictor asymmetry creates an implicit regularization — the online network chases a moving target it can never fully reach. BatchNorm in the projector also helps by preventing constant-output solutions. The community debated this for a year after the paper came out.
+
+**Pause and ask students:**
+
+> "If you remove the predictor from BYOL — so both branches are symmetric — what happens? Try it. It collapses immediately."
 
 ---
 
@@ -158,15 +204,43 @@ teacher = momentum * teacher + (1 - momentum) * student
 
 **This is the most important concept to explain carefully:**
 
-> "Why doesn't DINO collapse? If teacher and student both output the same constant vector for every image, the loss would be zero. That's mode collapse."
->
-> "DINO prevents this with centering: subtract a running mean from the teacher output before softmax. If one dimension dominates (the network trying to collapse), the running mean catches it and subtracts it out."
+> "BYOL needed a predictor MLP + BatchNorm to prevent collapse — and nobody fully understood why for a year. DINO replaces all of that with one explicit, interpretable operation: centering."
+
+**The collapse scenario without centering:**
+
+```
+teacher(dog) softmax  → [0.98, 0.01, 0.01, ...]   ← dim 0 always dominates
+teacher(cat) softmax  → [0.97, 0.02, 0.01, ...]
+teacher(car) softmax  → [0.99, 0.01, 0.00, ...]
+→ student learns: always output [1, 0, 0, ...] → loss → 0, nothing learned
+```
+
+**With centering:**
 
 $$z_{\text{teacher,corrected}} = z_{\text{teacher}} - c$$
 
 $$c \leftarrow m \cdot c + (1 - m) \cdot \text{mean\_batch}(z_{\text{teacher}})$$
 
-> "Low teacher temperature (τ_t = 0.04) makes the teacher output sharp and confident. High student temperature (τ_s = 0.1) makes the student softer. The student has to match a sharp teacher — this sharpness is what forces learning."
+If dimension 0 dominates, `c[0]` grows to cancel it out. The teacher is forced to spread probability mass across all dimensions — the student must learn real structure to match.
+
+```
+(teacher(dog) - c) softmax  → [0.15, 0.12, 0.08, ...]   ← spread out
+(teacher(cat) - c) softmax  → [0.08, 0.18, 0.11, ...]
+→ student must model actual image differences
+```
+
+**Temperature asymmetry:**
+
+| | Temperature | Effect |
+|---|---|---|
+| Teacher | τ = 0.04 | Sharp, confident target — forces strong signal |
+| Student | τ = 0.1 | Softer — avoids gradient explosion |
+
+> "The student must match a distribution that is *sharper than itself*. This creates a difficulty gradient that drives learning — the student can never fully catch the teacher."
+
+**Pause and ask students:**
+
+> "What happens if we set teacher temperature = student temperature = 0.1? The task becomes easier. What if τ_teacher → 0? The teacher becomes a one-hot — near-infinite gradients. DINO's asymmetric temperatures are carefully chosen."
 
 ---
 
@@ -218,11 +292,19 @@ $$c \leftarrow m \cdot c + (1 - m) \cdot \text{mean\_batch}(z_{\text{teacher}})$
 
 ## Exercise Walkthrough Tips
 
-**Ex1 (DINO centering ablation):** This is the most valuable exercise. Without centering, the teacher distribution collapses to one or two dominant dimensions. The attention maps become meaningless — uniform attention over all patches. Students should see the loss stop decreasing (trivial solution) and the attention maps go flat.
+**Ex1a (DINO centering ablation):** The most valuable exercise in the lab. Without centering, the teacher distribution collapses to one or two dominant dimensions. Students should see:
+- Loss stops decreasing quickly (trivial solution found)
+- `center.norm()` stays near zero (nothing to subtract)
+- Attention maps go flat — uniform attention over all patches, no foreground bias
+- Linear eval accuracy stays near random (~10%)
 
-**The center norm question:** It should stabilize, not grow unboundedly. If it grows, the centering update is chasing a moving distribution.
+The center norm in normal training should **stabilize** — not grow unboundedly. Growing center norm means the centering update is chasing a collapsing distribution.
 
-**Ex2 (Temperature sensitivity):** Very low student temperature (τ_s → 0) makes gradients unstable — sharp targets + sharp predictions → numerical issues. Very high teacher temperature (τ_t → 1) makes the teacher signal too soft — the student has nothing meaningful to match. Sweet spot is asymmetry: sharp teacher, softer student.
+**Ex1b (Multi-crop ablation):** Without local crops, the student only sees the same views as the teacher — the task is easier and features are less transferable. Expect ~2-5% lower linear eval accuracy. Attention maps may look slightly less focused since the model never had to infer global context from local patches.
+
+**Ex2 (MAE masking ablation):** Low masking (0.25) → reconstruction is easy (neighbors reveal content) → model learns texture interpolation, not semantics → worse linear eval despite lower reconstruction loss. High masking (0.75) → harder task → model must understand global structure → better features. The key insight: **reconstruction loss and representation quality are inversely correlated at low masking ratios**.
+
+**Ex3 (Three-way comparison):** Students often expect MAE to win on linear eval since it's newer. On CIFAR-10 with 10 epochs, DINO often beats MAE — MAE needs much longer training (1600 epochs on ImageNet) to shine. The discussion question about medical segmentation should lead students to DINO: interpretable attention maps + strong spatial features + no need for pixel-level labels.
 
 ---
 
