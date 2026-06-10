@@ -47,7 +47,7 @@
 
 ---
 
-## Part 3: GCN (Cells 7–11)
+## Part 3: GCN (Cells 6–10)
 
 ### The core idea — message passing
 
@@ -75,7 +75,7 @@ $$H^{(k+1)} = \sigma\left( \tilde{D}^{-1/2} \tilde{A} \tilde{D}^{-1/2} H^{(k)} W
 
 ---
 
-## Part 4: GAT (Cells 12–16)
+## Part 4: GAT (Cells 11–16)
 
 ### The GCN limitation
 
@@ -97,13 +97,78 @@ $$\alpha_{ij} = \text{softmax}_j\left( \text{LeakyReLU}\left( \mathbf{a}^T [W h_
 
 > "When neighbor importance is heterogeneous — some neighbors are much more informative than others. On homogeneous graphs (all neighbors equally relevant), GAT and GCN perform similarly. GAT is also more robust to noisy edges."
 
-### GCN vs GAT — connect to Transformers from A1
+### Connect to Transformers
 
 > "Attention in GAT is the same mechanism as in the Vision Transformer. ViT asks: which *patches* should attend to each other? GAT asks: which *neighbors* should a node attend to? Both learn to weight inputs dynamically instead of using fixed weights."
 
 ---
 
-## Part 5: Recommendation System (Cells 17–19)
+## Bridge: GCN → GAT → GraphSAGE (Cell 17)
+
+### Why scalability matters
+
+**What to say:**
+
+> "GCN and GAT both require the full N×N adjacency matrix in memory. MovieLens has 1,682 nodes — that's fine. But Pinterest has 3 billion nodes. A 3B×3B matrix doesn't fit in any GPU ever built."
+
+**The core problem:**
+
+> "Every GCN/GAT forward pass touches all N nodes simultaneously. You can't batch by nodes — the graph connections couple everything together."
+
+**GraphSAGE's insight:**
+
+> "Instead of aggregating ALL neighbors, randomly sample a fixed number — say k=10. Now each node's computation touches at most k neighbors. Memory per node is constant regardless of graph size. You can train on billion-node graphs with a laptop GPU."
+
+**The concat trick:**
+
+```
+GCN:       h_v = σ( Â[v,:] · H · W )
+              — weighted sum over ALL neighbors, no self-identity preserved
+
+GraphSAGE: h_v = σ( W · [h_v ∥ mean(h_{N(v)})] )
+              — concat self embedding with aggregated neighbors
+```
+
+> "The concat keeps the node's own identity separate from what it received from neighbors. This turns out to matter a lot in inductive settings — when the model needs to generalize to nodes it never saw during training."
+
+---
+
+## Part 5: GraphSAGE (Cells 17–19)
+
+### Inductive vs transductive learning
+
+**This is the key conceptual shift from GCN:**
+
+| | Transductive (GCN/GAT) | Inductive (GraphSAGE) |
+|---|---|---|
+| **Training** | All nodes seen at once | Mini-batch of nodes |
+| **Test nodes** | Must be in training graph | Can be new, unseen nodes |
+| **Memory** | O(N²) for adjacency | O(k) per node |
+| **Use case** | Fixed graph, node labels | Streaming data, new users |
+
+**What to say:**
+
+> "In recommendation systems, new users sign up every day. A transductive model would need to be retrained every time. GraphSAGE learns a *function* — given a node's features and a sample of its neighbors, compute its embedding. New nodes just run the function. No retraining."
+
+### The neighbor sampling trick
+
+**Pause and ask students:**
+
+> "If you randomly sample 10 neighbors instead of all 50, do you lose information?"
+>
+> Answer: Yes, but you get it back over many training steps. Different epochs sample different subsets. The model learns to generalize from partial neighborhood information — which is exactly what makes it work on new nodes.
+
+### Three-way comparison
+
+After running all three models, the t-SNE comparison reveals:
+
+- **GCN**: Clean clusters, stable. Best if you have the full graph and enough memory.
+- **GAT**: Similar clusters, sometimes better on heterogeneous graphs. Slower due to N×N attention.
+- **GraphSAGE**: Comparable accuracy, much faster per epoch. Degrades gracefully on sparse/noisy graphs.
+
+---
+
+## Part 6: Recommendation System (Cells 21–24)
 
 ### The bipartite graph idea
 
@@ -131,11 +196,13 @@ Users        Movies
 
 ## Exercise Walkthrough Tips
 
-**Ex1 (Over-smoothing):** With 1 layer, nodes only see 1-hop neighbors. With 5+ layers, all nodes start averaging over the whole graph — embeddings converge to the same value. Students should see accuracy *drop* after 3-4 layers. Plot accuracy vs depth.
+**Ex1 (Over-smoothing):** With 1 layer, nodes only see 1-hop neighbors. With 5+ layers, all nodes average over the whole graph — embeddings converge to the same value. Students should see accuracy *drop* after 3–4 layers. Plot both test accuracy and average cosine similarity vs depth. When cosine similarity approaches 1.0, over-smoothing is severe. Mechanical explanation: each layer applies $\tilde{D}^{-1/2}\tilde{A}\tilde{D}^{-1/2}$, which is a low-pass filter. Stack enough layers and all frequencies are smoothed out.
 
-**Ex2 (GCN vs GAT comparison):** Key metric is val accuracy on genre prediction. GAT should win on MovieLens because genre similarity is heterogeneous — drama films co-rated with drama tell you more than random co-ratings.
+**Ex2 (Three-way comparison):** Students often assume GAT wins because it's more complex. On MovieLens the results are close — genre co-rating is a fairly homogeneous signal. The interesting finding is usually GraphSAGE matching or beating GAT at a fraction of the per-epoch time. For the attention visualization: expect top-attended neighbors to share genre labels ~60–70% of the time (not 100% — some edges are cross-genre by design).
 
-**Ex3 (Recommendation):** Link prediction metric is AUC or Hits@K (did the true movie appear in the top-K recommendations?). Students should compare against a non-graph baseline (popularity-based: recommend most-rated movies to everyone).
+**Ex3 (MLP baseline):** This is the most important sanity check in the lab. If GCN can't beat a 2-layer MLP on node features alone, the graph structure isn't helping. On MovieLens, GCN typically beats MLP by 5–10% because genre features alone are weak (18 binary flags, many movies have the same genre) while co-rating provides rich collaborative signal. Key discussion: "relational information is irreducible — you can't compress the graph into the node features."
+
+**Ex4 (LightGCN):** Students expect more parameters = better. LightGCN removes W and σ entirely — only trainable parameters are the initial user/item embeddings. It outperforms RecGCN on recommendation because removing W avoids feature transformation that is unhelpful when input features are already learned embeddings (not raw features). The over-smoothing question: LightGCN uses a *layer-averaged* final embedding (sum across all K layers weighted equally). This prevents the final representation from being dominated by the deepest layer — over-smoothing is less severe than GCN.
 
 ---
 
@@ -146,15 +213,23 @@ Users        Movies
         ↓
 2017  GCN (Kipf)         "Spectral convolution → simple matrix form. Symmetric normalization."
         ↓
+2017  GraphSAGE          "Sample neighbors, not full graph. Scales to millions of nodes."
+        ↓
 2018  GAT (Veličković)   "Learned attention weights per edge. Not all neighbors equal."
         ↓
-2019  GraphSAGE          "Sample neighbors, not full graph. Scales to millions of nodes."
-        ↓
-2020+ Graph Transformers "Full attention over all nodes. No fixed graph structure needed."
+2020+ Graph Transformers "Full self-attention over all nodes + structural encodings."
 ```
+
+**Note on ordering:** GCN and GraphSAGE are both 2017 papers. GCN came first (Feb) and is simpler to explain. GraphSAGE (June) was explicitly motivated by GCN's scalability problem.
 
 **Closing question:**
 
 > "You're building a drug discovery system. Atoms are nodes, chemical bonds are edges, node features are atom type and charge. You want to predict if a molecule is toxic. How many GCN layers would you use, and why?"
 >
-> Answer: 3–4 layers. A molecule's toxicity depends on functional groups (local structure, 2–3 hops) and global shape (4–5 hops). Too many layers → over-smoothing, all atoms look the same. Sweet spot: enough to capture the relevant subgraph structures.
+> Answer: 3–4 layers. A molecule's toxicity depends on functional groups (local structure, 2–3 hops) and global shape (4–5 hops). Too many layers → over-smoothing, all atoms look the same. Sweet spot: enough to capture the relevant subgraph structures without losing local identity.
+
+**Follow-up:**
+
+> "Now suppose new molecules arrive every hour and you need to embed them immediately without retraining. Which architecture — GCN or GraphSAGE — would you use? Why?"
+>
+> Answer: GraphSAGE. It learns an *inductive* function — given a new molecule's atom features and bond structure, compute its embedding on the fly. GCN is transductive: it embeds the full training graph and can't generalize to new nodes without retraining.
