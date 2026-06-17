@@ -163,8 +163,10 @@ GraphSAGE: h_v = σ( W · [h_v ∥ mean(h_{N(v)})] )
 After running all three models, the t-SNE comparison reveals:
 
 - **GCN**: Clean clusters, stable. Best if you have the full graph and enough memory.
-- **GAT**: Similar clusters, sometimes better on heterogeneous graphs. Slower due to N×N attention.
-- **GraphSAGE**: Comparable accuracy, much faster per epoch. Degrades gracefully on sparse/noisy graphs.
+- **GAT**: Can be highly sensitive to hyperparameters on small training sets. With `dropout=0.6`, `n_heads=8`, `lr=5e-3` on MovieLens (only ~300 labeled training nodes), GAT can collapse to near-random accuracy (observed: 1.2% test acc, val acc stuck near 0 for 150+ epochs) while loss barely moves. This is **not** a sign that attention doesn't work on this graph — it's a sign the defaults (tuned for Cora's much larger label budget) are too aggressive here. Lowering dropout to ~0.3, raising lr to ~1e-2, and reducing heads to 4 (input is only 19-dim) typically fixes it.
+- **GraphSAGE**: Comparable or better accuracy than GCN, but the naive per-node Python loop in `GraphSAGELayer.forward` (`for v in range(N): ...`) is **not vectorized** — in practice this makes it the *slowest* of the three per epoch (observed: ~120s total training vs ~9s for GAT and <1s for GCN on the same hardware), the opposite of GraphSAGE's usual "scales better" reputation. Make sure students understand this is an implementation artifact of the teaching code, not a property of the algorithm — real GraphSAGE implementations batch the neighbor sampling.
+
+**Teaching tip:** Have students watch the *loss curve*, not just final accuracy, when something looks off. A flat loss across 100+ epochs (like the GAT failure case) is a stronger signal of a hyperparameter problem than the accuracy number alone — it rules out "the model converged to a bad-but-stable solution" and points at "gradients aren't flowing."
 
 ---
 
@@ -198,7 +200,7 @@ Users        Movies
 
 **Ex1 (Over-smoothing):** With 1 layer, nodes only see 1-hop neighbors. With 5+ layers, all nodes average over the whole graph — embeddings converge to the same value. Students should see accuracy *drop* after 3–4 layers. Plot both test accuracy and average cosine similarity vs depth. When cosine similarity approaches 1.0, over-smoothing is severe. Mechanical explanation: each layer applies $\tilde{D}^{-1/2}\tilde{A}\tilde{D}^{-1/2}$, which is a low-pass filter. Stack enough layers and all frequencies are smoothed out.
 
-**Ex2 (Three-way comparison):** Students often assume GAT wins because it's more complex. On MovieLens the results are close — genre co-rating is a fairly homogeneous signal. The interesting finding is usually GraphSAGE matching or beating GAT at a fraction of the per-epoch time. For the attention visualization: expect top-attended neighbors to share genre labels ~60–70% of the time (not 100% — some edges are cross-genre by design).
+**Ex2 (Three-way comparison):** Students often assume GAT wins because it's more complex. In practice GAT is the model most likely to need debugging: with the default hyperparameters in this notebook it can collapse to near-random accuracy on MovieLens (val accuracy stuck near 0, loss barely decreasing over 200 epochs) because dropout=0.6 and 8 heads are tuned for Cora's larger labeled set, not MovieLens's ~300 training nodes. If a student reports GAT accuracy near 1–2%, walk them toward lowering dropout (~0.3) and learning rate up (~1e-2) rather than assuming attention "doesn't work" on this graph. Separately, GraphSAGE's per-node Python loop is unvectorized, so it is usually the *slowest* of the three per epoch here — not the fastest, despite the algorithm's reputation for scaling. For the attention visualization (once GAT is actually training): expect top-attended neighbors to share genre labels ~60–70% of the time (not 100% — some edges are cross-genre by design).
 
 **Ex3 (MLP baseline):** This is the most important sanity check in the lab. If GCN can't beat a 2-layer MLP on node features alone, the graph structure isn't helping. On MovieLens, GCN typically beats MLP by 5–10% because genre features alone are weak (18 binary flags, many movies have the same genre) while co-rating provides rich collaborative signal. Key discussion: "relational information is irreducible — you can't compress the graph into the node features."
 
